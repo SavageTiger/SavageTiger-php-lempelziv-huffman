@@ -20,7 +20,7 @@ class LempelZiv
     function __construct($input)
     {
         $this->tokenEncoder = new TokenEncoder();
-//        $input = str_replace($this::TOKEN_PREFIX, $this::TOKEN_PREFIX . $this::TOKEN_PREFIX, $input);
+
         $this->buffer = str_split($input, $this::PACKET_SIZE);
     }
 
@@ -53,9 +53,13 @@ class LempelZiv
             if ($char === $this::TOKEN_PREFIX) {
                 $tokenBytes = $origin[$i + 1] . $origin[$i + 2];
 
-                $data = $this->tokenEncoder->fetchTokenDataFromStream($tokenBytes, $buffer);
+                if ($tokenBytes === $this::TOKEN_PREFIX . $this::TOKEN_PREFIX) {
+                    $buffer .= $this::TOKEN_PREFIX;
+                } else {
+                    $data = $this->tokenEncoder->fetchTokenDataFromStream($tokenBytes, $buffer);
 
-                $buffer .= $data;
+                    $buffer .= $data;
+                }
 
                 $i += 2;
             } else {
@@ -80,7 +84,7 @@ class LempelZiv
         }
 
         foreach ($this->tokens as $token) {
-            $tokenOffsets[$token[3]] = $token;
+            $tokenOffsets[$token[2]] = $token;
         }
 
         while ($writeOffset < $originLength) {
@@ -95,6 +99,12 @@ class LempelZiv
                 $writeOffset += $token[1];
             } else {
                 $buffer .= $origin[$writeOffset];
+
+                // Escape the token identifier character
+                // (tested using "~", there is no token that contains "~~" as binary representation)
+                if ($origin[$writeOffset] === $this::TOKEN_PREFIX) {
+                    $buffer .= $this::TOKEN_PREFIX . $this::TOKEN_PREFIX;
+                }
 
                 $writeOffset++;
             }
@@ -153,14 +163,14 @@ class LempelZiv
             }
         }
 
-        if ($length > 4 && $length < 15) {
-            $token = $offset + ($this::PACKET_SIZE - $token);
+        if ($length > 3 && $length < 15) {
+            $jump = $offset + ($this::PACKET_SIZE - $token);
 
-            if ($token > 4095) {
+            if ($jump > 4095) {
                 return false;
             }
 
-            return array($token, $length, substr($needle, 0, $length));
+            return [$jump, $length];
         }
 
         return false;
