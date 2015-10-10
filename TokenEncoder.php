@@ -75,6 +75,6 @@ class TokenEncoder
     {
         $tokenData = $this->decodeToken($bytes);
 
-        return substr($stream, $tokenData[0], $tokenData[1]);
+        return substr($stream, strlen($stream) - $tokenData[0], $tokenData[1]);
     }
 }

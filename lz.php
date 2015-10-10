@@ -1,13 +1,17 @@
 <?php
 
-$input = file_get_contents('bladeru1');
-
-$lz = new LempelZiv($input);
-echo($lz->compress());
+require('TokenEncoder.php');
 
 class LempelZiv
 {
     const TOKEN_PREFIX = '~';
+
+    const PACKET_SIZE = 4096;
+
+    /**
+     * @var TokenEncoder
+     */
+    protected $tokenEncoder;
 
     protected $buffer = array();
 
@@ -15,16 +19,16 @@ class LempelZiv
 
     function __construct($input)
     {
+        $this->tokenEncoder = new TokenEncoder();
 //        $input = str_replace($this::TOKEN_PREFIX, $this::TOKEN_PREFIX . $this::TOKEN_PREFIX, $input);
-        $this->buffer = str_split($input, 4096);
+        $this->buffer = str_split($input, $this::PACKET_SIZE);
     }
 
     public function compress()
     {
         $this->tokanize();
-        $this->writeTokens();
 
-        return implode('', $this->buffer);
+        return $this->writeTokens();
     }
 
     public function uncompress()
@@ -34,98 +38,69 @@ class LempelZiv
 
     protected function readTokens()
     {
-        $buffer = array();
+        $origin       = implode('', $this->buffer);
+        $originLength = strlen($origin);
 
-        foreach ($this->buffer as $offset => $stream) {
-            $bufferLength = strlen($stream);
+        $buffer = '';
 
-            if ($offset === 0) {
-                $buffer[$offset] = $this->buffer[$offset];
+        if (isset($this->buffer[0])) {
+            $buffer = $this->buffer[0];
+        }
+
+        for ($i = strlen($buffer); $i < $originLength; $i++) {
+            $char = $origin[$i];
+
+            if ($char === $this::TOKEN_PREFIX) {
+                $tokenBytes = $origin[$i + 1] . $origin[$i + 2];
+
+                $data = $this->tokenEncoder->fetchTokenDataFromStream($tokenBytes, $buffer);
+
+                $buffer .= $data;
+
+                $i += 2;
             } else {
-                $buffer[$offset] = '';
-
-                for ($i = 0; $i < strlen($stream) - 1; $i++) {
-                    $char = $stream[$i];
-
-                    if ($char === $this::TOKEN_PREFIX && ($i + 2) < $bufferLength) {
-                        $tokenBytes = $stream[$i + 1] . $stream[$i + 2];
-
-                        if ($tokenBytes[0] !== $this::TOKEN_PREFIX) {
-                            $data = $this->decodeToken($tokenBytes, $buffer[$offset - 1]);
-
-                            $buffer[$offset] .= $data;
-                            echo $buffer[$offset] . "\r\n";
-                            $i += 3;
-                        } else {
-                            $buffer[$offset] .= $stream[$i];
-                        }
-                    } else {
-                        $buffer[$offset] .= $stream[$i];
-                    }
-                }
+                $buffer .= $origin[$i];
             }
         }
 
-        return implode('', $buffer);
-    }
-
-    protected function decodeToken($tokenBytes, $buffer)
-    {
-        $tokenBytes = unpack('H*', $tokenBytes);
-        $tokenBytes = decbin(hexdec(current($tokenBytes)));
-
-        $dataOffset = bindec(substr($tokenBytes, 0, 12));
-        $dataLength = bindec(substr($tokenBytes, 12, 4));
-
-        print_R([$dataOffset, $dataLength]);
-
-        return substr($buffer, $dataOffset, $dataLength);
+        return $buffer;
     }
 
     protected function writeTokens()
     {
-        $buffer = array();
+        $origin       = implode('', $this->buffer);
+        $originLength = strlen($origin);
+        $writeOffset  = 0;
+        $buffer       = '';
 
-        foreach ($this->buffer as $offset => $lookAhead) {
-            $tokenByteLength = 0;
-            $compressedBytes = 0;
+        if (isset($this->buffer[0])) {
+            $buffer = $this->buffer[0];
 
-            foreach ($this->tokens as $token) {
-                if ($token[2] === $offset) {
-                    $tokenBytes =
-                        str_pad(decbin($token[0]), 12, '0', STR_PAD_LEFT) .
-                        str_pad(decbin($token[1]), 4, '0', STR_PAD_LEFT);
-                    $tokenBytes = pack('H*', base_convert($tokenBytes, 2, 16));
+            $writeOffset += strlen($buffer);
+        }
 
-                    $searchOffset = $token[3];
+        foreach ($this->tokens as $token) {
+            $tokenOffsets[$token[3]] = $token;
+        }
 
-                    if ($compressedBytes === 0) {
-                        $buffer[$offset] = substr($this->buffer[$offset], 0, $searchOffset);
-                    } else {
-                        $bufferOffset = strlen($buffer[$offset]) + ($compressedBytes - $tokenByteLength);
+        while ($writeOffset < $originLength) {
+            if (isset($tokenOffsets[$writeOffset])) {
+                $token      = $tokenOffsets[$writeOffset];
+                $tokenBytes = $this->tokenEncoder->encodeToken($token[0], $token[1]);
 
-                        $buffer[$offset] .= substr(
-                            $this->buffer[$offset],
-                            $bufferOffset,
-                            ($searchOffset - $bufferOffset)
-                        );
-                    }
+                $buffer .= $this::TOKEN_PREFIX . $tokenBytes;
 
-                    $buffer[$offset] .= $this::TOKEN_PREFIX . $tokenBytes;
+                unset($tokenOffsets[$writeOffset]);
 
-//                    echo ">>" . $buffer[$offset] . "<<\r\n";
+                $writeOffset += $token[1];
+            } else {
+                $buffer .= $origin[$writeOffset];
 
-                    $tokenByteLength += 3;
-                    $compressedBytes += $token[1];
-                }
-
-                if ($compressedBytes === 0) {
-                    $buffer[$offset] = $this->buffer[$offset];
-                }
+                $writeOffset++;
             }
         }
 
-        $this->buffer = $buffer;
+        return $buffer;
     }
 
     protected function tokanize()
@@ -138,8 +113,7 @@ class LempelZiv
 
                 while ($searchOffset < $searchLength) {
                     if ($token = $this->findToken($lookAhead, $searchBuffer, $searchOffset)) {
-                        $token[] = $offset;
-                        $token[] = $searchOffset;
+                        $token[] = (($this::PACKET_SIZE * $offset) + $searchOffset);
 
                         $this->tokens[] = $token;
 
@@ -160,7 +134,7 @@ class LempelZiv
         $searchLength = strlen($searchBuffer);
         $length       = 0;
 
-        while ($occurance !== false && $length < 16) {
+        while ($occurance !== false && $length < 15) {
             if ($length > $searchLength) {
                 return false;
             }
@@ -179,8 +153,14 @@ class LempelZiv
             }
         }
 
-        if ($length > 4 && $token > $offset) {
-            return array($token, $length);
+        if ($length > 4 && $length < 15) {
+            $token = $offset + ($this::PACKET_SIZE - $token);
+
+            if ($token > 4095) {
+                return false;
+            }
+
+            return array($token, $length, substr($needle, 0, $length));
         }
 
         return false;
